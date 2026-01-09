@@ -2,6 +2,8 @@
 
 A demonstration project showing how to build and use **Context Graphs** with Neo4j for AI-powered decision tracing in financial institutions.
 
+![Trading Limit Override Toolcall](img/trading_limit_override_toolcall.png)
+
 ## What is a Context Graph?
 
 Context Graphs are the infrastructure layer that enables AI agents to make enterprise-grade decisions. They capture **decision traces** - the tribal knowledge, exception logic, and reasoning that traditionally lives only in human experts' heads.
@@ -10,6 +12,67 @@ Key concepts:
 - **State Clock**: What is true now (traditional databases)
 - **Event Clock**: What happened, when, and why (context graphs)
 - **Decision Traces**: Full reasoning, risk factors, confidence scores, and causal relationships
+
+
+## AI-powered Decision Tracing For Financial Institutions
+
+![Graph Data Model](img/graph_data_model.png)
+
+### AI Assistant
+
+Ask questions about customers, decisions, and policies.
+
+
+### Context Graph
+
+Visualize entities, decisions, and causal relationships.
+
+
+### Decision Trace
+
+Inspect reasoning, precendents, and causal chains.
+
+
+## Demo Scenarios
+
+![Trading Limit Override Toolcard](img/trading_limit_override_toolcard.png)
+
+### Scenario 1: Credit Decision with Precedent Lookup
+
+```
+User: "Should we approve a $50K credit line increase for John Smith?"
+
+Agent:
+1. Searches customer profile
+2. Finds similar past decisions via FastRP embeddings
+3. Cites relevant precedents
+4. Makes recommendation with confidence score
+5. Records decision trace with full reasoning
+```
+
+### Scenario 2: Fraud Pattern Detection
+
+```
+User: "Analyze account #12345 for fraud patterns"
+
+Agent:
+1. Uses FastRP embeddings to compare with known fraud typologies
+2. Applies Node Similarity to find structural matches
+3. Visualizes suspicious patterns in graph
+4. Returns risk score with explanation
+```
+
+### Scenario 3: Exception Request with Audit Trail
+
+```
+User: "We need to override the trading limit for XYZ Corp"
+
+Agent:
+1. Finds past exceptions and their outcomes
+2. Traces causal chain of similar exceptions
+3. Records exception with justification and precedent links
+4. Links to applicable policies
+```
 
 ## Key Features
 
@@ -144,90 +207,6 @@ NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=password
 ```
 
-## Demo Scenarios
-
-### Scenario 1: Credit Decision with Precedent Lookup
-
-```
-User: "Should we approve a $50K credit line increase for John Smith?"
-
-Agent:
-1. Searches customer profile
-2. Finds similar past decisions via FastRP embeddings
-3. Cites relevant precedents
-4. Makes recommendation with confidence score
-5. Records decision trace with full reasoning
-```
-
-### Scenario 2: Fraud Pattern Detection
-
-```
-User: "Analyze account #12345 for fraud patterns"
-
-Agent:
-1. Uses FastRP embeddings to compare with known fraud typologies
-2. Applies Node Similarity to find structural matches
-3. Visualizes suspicious patterns in graph
-4. Returns risk score with explanation
-```
-
-### Scenario 3: Exception Request with Audit Trail
-
-```
-User: "We need to override the trading limit for XYZ Corp"
-
-Agent:
-1. Finds past exceptions and their outcomes
-2. Traces causal chain of similar exceptions
-3. Records exception with justification and precedent links
-4. Links to applicable policies
-```
-
-
-Best demo messages:**
-
-1. **Credit Decision with Precedent Lookup:**
-```
-Should we approve a credit limit increase for Jessica Norris? She's requesting a $25,000 limit increase.
-```
-(Jessica Norris has the highest risk score at 0.77, which will trigger precedent searches and policy checks)
-
-2. **Fraud Pattern Analysis:**
-```
-Analyze the fraud decision history for Jacob Fitzpatrick and find similar cases
-```
-(High-risk customer with multiple source systems)
-
-3. **Causal Chain Investigation:**
-```
-What decisions have been made about Amanda Smith and what caused them?
-```
-(She has the most decisions - 7 total - good for showing decision traces)
-
-4. **Policy-Based Decision:**
-```
-A customer wants to make a $15,000 wire transfer. What policies apply and are there similar past decisions?
-```
-(Triggers High-Value Transaction Review policy and precedent search)
-
-5. **Exception Request:**
-```
-We need to override the trading limit for Katherine Miller. Find precedents for similar exceptions.
-```
-(Shows exception handling with precedent lookup)
-
-**The most compelling single message that demonstrates multiple benefits:**
-
-```
-Should we approve a credit limit increase for Jessica Norris? She has a high risk score and is requesting $25,000. Find similar past decisions and applicable policies.
-```
-
-This message will:
-- Search for the customer (demonstrating entity lookup)
-- Find her risk score and decision history
-- Search for precedent decisions using semantic/structural similarity
-- Look up applicable policies (Credit Limit Policy)
-- Show the causal reasoning chain
 
 ## API Endpoints
 
@@ -342,7 +321,6 @@ ORDER BY combined_score DESC
 ## References
 
 - [AI's Trillion-Dollar Opportunity: Context Graphs](https://foundationcapital.com/context-graphs-ais-trillion-dollar-opportunity/) - Foundation Capital
-- [Neo4j FastRP Documentation](https://neo4j.com/docs/graph-data-science/current/machine-learning/node-embeddings/fastrp/)
 - [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)
 - [NVL Visualization Library](https://neo4j.com/docs/nvl/)
 

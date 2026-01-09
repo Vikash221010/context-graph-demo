@@ -14,6 +14,7 @@ import {
   Code,
   Accordion,
 } from "@chakra-ui/react";
+import ReactMarkdown from "react-markdown";
 import { InlineGraph } from "./ContextGraphView";
 import {
   streamChatMessage,
@@ -740,9 +741,96 @@ function ChatMessageBubble({
 
         {/* Message content */}
         <Flex align="flex-start" gap={2}>
-          <Text whiteSpace="pre-wrap" fontSize="sm" flex={1}>
-            {message.content}
-          </Text>
+          {isUser ? (
+            <Text whiteSpace="pre-wrap" fontSize="sm" flex={1}>
+              {message.content}
+            </Text>
+          ) : (
+            <Box flex={1} fontSize="sm" className="markdown-content">
+              <ReactMarkdown
+                components={{
+                  p: ({ children }) => (
+                    <Text mb={2} _last={{ mb: 0 }}>
+                      {children}
+                    </Text>
+                  ),
+                  strong: ({ children }) => (
+                    <Text as="strong" fontWeight="bold">
+                      {children}
+                    </Text>
+                  ),
+                  em: ({ children }) => (
+                    <Text as="em" fontStyle="italic">
+                      {children}
+                    </Text>
+                  ),
+                  ul: ({ children }) => (
+                    <Box as="ul" pl={4} mb={2}>
+                      {children}
+                    </Box>
+                  ),
+                  ol: ({ children }) => (
+                    <Box as="ol" pl={4} mb={2}>
+                      {children}
+                    </Box>
+                  ),
+                  li: ({ children }) => (
+                    <Box as="li" mb={1}>
+                      {children}
+                    </Box>
+                  ),
+                  code: ({ children, className }) => {
+                    const isInline = !className;
+                    return isInline ? (
+                      <Code fontSize="xs" px={1}>
+                        {children}
+                      </Code>
+                    ) : (
+                      <Box
+                        as="pre"
+                        bg="bg.emphasized"
+                        p={3}
+                        borderRadius="md"
+                        overflow="auto"
+                        mb={2}
+                        fontSize="xs"
+                      >
+                        <code>{children}</code>
+                      </Box>
+                    );
+                  },
+                  h1: ({ children }) => (
+                    <Text fontSize="lg" fontWeight="bold" mb={2} mt={3}>
+                      {children}
+                    </Text>
+                  ),
+                  h2: ({ children }) => (
+                    <Text fontSize="md" fontWeight="bold" mb={2} mt={3}>
+                      {children}
+                    </Text>
+                  ),
+                  h3: ({ children }) => (
+                    <Text fontSize="sm" fontWeight="bold" mb={1} mt={2}>
+                      {children}
+                    </Text>
+                  ),
+                  blockquote: ({ children }) => (
+                    <Box
+                      borderLeftWidth={3}
+                      borderLeftColor="gray.300"
+                      pl={3}
+                      my={2}
+                      color="gray.600"
+                    >
+                      {children}
+                    </Box>
+                  ),
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </Box>
+          )}
           {isStreaming && <Spinner size="xs" color="brand.500" />}
         </Flex>
       </Box>
