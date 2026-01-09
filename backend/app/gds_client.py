@@ -225,6 +225,10 @@ class GDSClient:
         graph_name: str = "entity-graph",
     ) -> list[dict]:
         """Find accounts with similar neighborhood structures."""
+        # Ensure the graph projection exists
+        if graph_name == "entity-graph":
+            self._ensure_entity_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -257,6 +261,10 @@ class GDSClient:
         graph_name: str = "entity-graph",
     ) -> list[dict]:
         """Find potential duplicate persons using Node Similarity."""
+        # Ensure the graph projection exists
+        if graph_name == "entity-graph":
+            self._ensure_entity_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -285,6 +293,19 @@ class GDSClient:
     # FRAUD PATTERN DETECTION
     # ============================================
 
+    def _ensure_entity_graph_exists(self) -> None:
+        """Ensure the entity-graph projection exists, creating it if necessary."""
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                CALL gds.graph.exists('entity-graph') YIELD exists
+                RETURN exists
+                """
+            )
+            record = result.single()
+            if not record or not record["exists"]:
+                self.create_entity_graph_projection()
+
     def detect_fraud_patterns(
         self,
         account_id: Optional[str] = None,
@@ -292,6 +313,10 @@ class GDSClient:
         graph_name: str = "entity-graph",
     ) -> list[dict]:
         """Detect accounts with similar structures to known fraud cases."""
+        # Ensure the graph projection exists
+        if graph_name == "entity-graph":
+            self._ensure_entity_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             if account_id:
                 # Check specific account against fraud patterns
