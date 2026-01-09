@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Box,
   Flex,
@@ -11,16 +11,19 @@ import {
   Spinner,
   Textarea,
   IconButton,
-} from '@chakra-ui/react';
-import { InlineGraph } from './ContextGraphView';
+  Code,
+  Accordion,
+} from "@chakra-ui/react";
+import { InlineGraph } from "./ContextGraphView";
 import {
-  sendChatMessage,
-  getDecisionGraph,
+  streamChatMessage,
+  getGraphData,
   type ChatMessage,
-  type ChatResponse,
+  type StreamEvent,
   type Decision,
   type GraphData,
-} from '@/lib/api';
+  type AgentContext,
+} from "@/lib/api";
 
 interface ChatInterfaceProps {
   conversationHistory: ChatMessage[];
@@ -29,14 +32,73 @@ interface ChatInterfaceProps {
   onGraphUpdate: (data: GraphData) => void;
 }
 
+interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  output?: unknown;
+}
+
 interface MessageWithGraph extends ChatMessage {
   graphData?: GraphData;
-  decision?: Decision;
-  toolCalls?: Array<{
-    name: string;
-    arguments: Record<string, unknown>;
-    result?: unknown;
-  }>;
+  toolCalls?: ToolCall[];
+  agentContext?: AgentContext;
+}
+
+// Helper function to extract entity IDs from tool results
+function extractEntityIds(
+  toolName: string,
+  input: Record<string, unknown>,
+  output: unknown,
+): string[] {
+  const ids: string[] = [];
+
+  // Extract from input parameters
+  if (input.customer_id) ids.push(String(input.customer_id));
+  if (input.account_id) ids.push(String(input.account_id));
+  if (input.decision_id) ids.push(String(input.decision_id));
+
+  // Extract from output based on tool type
+  if (output && typeof output === "object") {
+    const result = output as Record<string, unknown>;
+
+    // Handle customers array
+    if (Array.isArray(result.customers)) {
+      result.customers.slice(0, 3).forEach((c: Record<string, unknown>) => {
+        if (c.id) ids.push(String(c.id));
+      });
+    }
+
+    // Handle decisions array
+    if (Array.isArray(result.decisions)) {
+      result.decisions.slice(0, 3).forEach((d: Record<string, unknown>) => {
+        if (d.id) ids.push(String(d.id));
+      });
+    }
+
+    // Handle similar_decisions array
+    if (Array.isArray(result.similar_decisions)) {
+      result.similar_decisions
+        .slice(0, 3)
+        .forEach((d: Record<string, unknown>) => {
+          if (d.id) ids.push(String(d.id));
+        });
+    }
+
+    // Handle precedents array
+    if (Array.isArray(result.precedents)) {
+      result.precedents.slice(0, 3).forEach((p: Record<string, unknown>) => {
+        if (p.id) ids.push(String(p.id));
+      });
+    }
+
+    // Handle causal_chain
+    if (result.causal_chain && typeof result.causal_chain === "object") {
+      const chain = result.causal_chain as Record<string, unknown>;
+      if (chain.decision_id) ids.push(String(chain.decision_id));
+    }
+  }
+
+  return Array.from(new Set(ids)); // Remove duplicates
 }
 
 export function ChatInterface({
@@ -46,20 +108,20 @@ export function ChatInterface({
   onGraphUpdate,
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<MessageWithGraph[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Scroll to bottom when messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`;
     }
   }, [input]);
@@ -68,80 +130,212 @@ export function ChatInterface({
     if (!input.trim() || isLoading) return;
 
     const userMessage: MessageWithGraph = {
-      role: 'user',
+      role: "user",
       content: input.trim(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput('');
+    setInput("");
     setIsLoading(true);
 
+    // Create a placeholder for the streaming assistant message
+    const assistantMessageIndex = messages.length + 1;
+    const assistantMessage: MessageWithGraph = {
+      role: "assistant",
+      content: "",
+      toolCalls: [],
+    };
+    setMessages((prev) => [...prev, assistantMessage]);
+
     try {
-      const response: ChatResponse = await sendChatMessage(
+      const toolCalls: ToolCall[] = [];
+      let fullContent = "";
+      let graphData: GraphData | undefined;
+      let agentContext: AgentContext | undefined;
+
+      for await (const event of streamChatMessage(
         userMessage.content,
-        messages.map((m) => ({ role: m.role, content: m.content }))
-      );
+        messages.map((m) => ({ role: m.role, content: m.content })),
+      )) {
+        switch (event.type) {
+          case "agent_context":
+            agentContext = event.context;
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                ...updated[assistantMessageIndex],
+                agentContext,
+              };
+              return updated;
+            });
+            break;
 
-      // Build assistant message with graph data if available
-      const assistantMessage: MessageWithGraph = {
-        role: 'assistant',
-        content: response.response,
-        toolCalls: response.tool_calls,
-        decision: response.decision_trace,
-      };
+          case "text":
+            fullContent += event.content;
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                ...updated[assistantMessageIndex],
+                content: fullContent,
+              };
+              return updated;
+            });
+            break;
 
-      // If there's a decision trace, fetch the graph data for it
-      if (response.decision_trace) {
-        try {
-          const graphData = await getDecisionGraph(response.decision_trace.id, 2);
-          assistantMessage.graphData = graphData;
-          onGraphUpdate(graphData);
-        } catch (error) {
-          console.error('Failed to fetch decision graph:', error);
-        }
-      }
+          case "tool_use":
+            toolCalls.push({ name: event.name, input: event.input });
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                ...updated[assistantMessageIndex],
+                toolCalls: [...toolCalls],
+              };
+              return updated;
+            });
+            break;
 
-      // Check tool calls for graph-related results
-      if (response.tool_calls) {
-        for (const toolCall of response.tool_calls) {
-          if (
-            toolCall.name.includes('graph') ||
-            toolCall.name.includes('decision') ||
-            toolCall.name.includes('customer')
-          ) {
-            // Tool may have returned graph data
-            if (toolCall.result && typeof toolCall.result === 'object') {
-              const result = toolCall.result as Record<string, unknown>;
-              if (result.nodes && result.relationships) {
-                assistantMessage.graphData = result as unknown as GraphData;
-                onGraphUpdate(result as unknown as GraphData);
+          case "tool_result":
+            // Update the matching tool call with its output
+            console.log("tool_result event:", event);
+            console.log("Looking for tool with name:", event.name);
+            console.log(
+              "Current toolCalls:",
+              JSON.stringify(toolCalls, null, 2),
+            );
+            const toolIndex = toolCalls.findIndex(
+              (t) => t.name === event.name && t.output === undefined,
+            );
+            console.log("Found toolIndex:", toolIndex);
+            if (toolIndex !== -1) {
+              const currentTool = toolCalls[toolIndex];
+              toolCalls[toolIndex].output = event.output;
+              console.log("Updated toolCall output:", toolCalls[toolIndex]);
+
+              // Check if this tool returned graph data directly
+              let foundGraphData = false;
+              if (event.output && typeof event.output === "object") {
+                const result = event.output as Record<string, unknown>;
+                // Check for graph_data field (new format from agent tools)
+                if (
+                  result.graph_data &&
+                  typeof result.graph_data === "object"
+                ) {
+                  const gd = result.graph_data as Record<string, unknown>;
+                  if (gd.nodes && gd.relationships) {
+                    graphData = gd as unknown as GraphData;
+                    onGraphUpdate(graphData);
+                    foundGraphData = true;
+                  }
+                }
+                // Also check for direct nodes/relationships (legacy format)
+                else if (result.nodes && result.relationships) {
+                  graphData = result as unknown as GraphData;
+                  onGraphUpdate(graphData);
+                  foundGraphData = true;
+                }
               }
+
+              // If no graph data was returned, try to fetch it based on entity IDs
+              if (!foundGraphData && event.output) {
+                const entityIds = extractEntityIds(
+                  currentTool.name,
+                  currentTool.input,
+                  event.output,
+                );
+                if (entityIds.length > 0) {
+                  // Fetch graph data for the first entity ID found
+                  getGraphData(entityIds[0], 2)
+                    .then((fetchedGraphData) => {
+                      if (fetchedGraphData.nodes.length > 0) {
+                        graphData = fetchedGraphData;
+                        onGraphUpdate(fetchedGraphData);
+                        // Update message with graph data
+                        setMessages((prev) => {
+                          const updated = [...prev];
+                          if (updated[assistantMessageIndex]) {
+                            updated[assistantMessageIndex] = {
+                              ...updated[assistantMessageIndex],
+                              graphData: fetchedGraphData,
+                            };
+                          }
+                          return updated;
+                        });
+                      }
+                    })
+                    .catch((err) => {
+                      console.error("Failed to fetch graph data:", err);
+                    });
+                }
+              }
+
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[assistantMessageIndex] = {
+                  ...updated[assistantMessageIndex],
+                  toolCalls: [...toolCalls],
+                  graphData,
+                };
+                return updated;
+              });
             }
-          }
+            break;
+
+          case "done":
+            // Final update with complete data
+            // Use local toolCalls array which has outputs populated from tool_result events
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                ...updated[assistantMessageIndex],
+                content: fullContent,
+                toolCalls: toolCalls,
+                graphData,
+                agentContext,
+              };
+              return updated;
+            });
+            break;
+
+          case "error":
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                ...updated[assistantMessageIndex],
+                content: `Error: ${event.error}`,
+              };
+              return updated;
+            });
+            break;
         }
       }
 
-      setMessages((prev) => [...prev, assistantMessage]);
-      onConversationUpdate([...messages, userMessage, assistantMessage]);
-
-      // If there's a decision, notify parent
-      if (response.decision_trace) {
-        onDecisionSelect(response.decision_trace);
-      }
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      const errorMessage: MessageWithGraph = {
-        role: 'assistant',
-        content: 'Sorry, I encountered an error processing your request. Please try again.',
+      // Update conversation history
+      const finalMessage: MessageWithGraph = {
+        role: "assistant",
+        content: fullContent,
+        toolCalls,
+        graphData,
+        agentContext,
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      onConversationUpdate([...messages, userMessage, finalMessage]);
+    } catch (error) {
+      console.error("Failed to send message:", error);
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[assistantMessageIndex] = {
+          role: "assistant",
+          content:
+            "Sorry, I encountered an error processing your request. Please try again.",
+        };
+        return updated;
+      });
     } finally {
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, onConversationUpdate, onDecisionSelect, onGraphUpdate]);
+  }, [input, isLoading, messages, onConversationUpdate, onGraphUpdate]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
@@ -156,34 +350,43 @@ export function ChatInterface({
           {messages.length === 0 && (
             <Box
               bg="brand.50"
-              _dark={{ bg: 'brand.900' }}
+              _dark={{ bg: "brand.900", borderColor: "brand.700" }}
               p={4}
               borderRadius="lg"
               borderWidth="1px"
               borderColor="brand.200"
-              _darkBorderColor="brand.700"
             >
               <Text fontWeight="medium" mb={2}>
                 Welcome to Context Graph Demo
               </Text>
-              <Text fontSize="sm" color="gray.600" _dark={{ color: 'gray.400' }}>
-                I can help you search for customers, analyze decisions, find similar precedents,
-                and trace causal relationships. Try asking:
+              <Text
+                fontSize="sm"
+                color="gray.600"
+                _dark={{ color: "gray.400" }}
+              >
+                I can help you search for customers, analyze decisions, find
+                similar precedents, and trace causal relationships. Try asking:
               </Text>
               <VStack align="start" mt={3} gap={1}>
                 <SuggestionChip
                   text="Search for customer John Smith"
-                  onClick={() => setInput('Search for customer John Smith')}
+                  onClick={() => setInput("Search for customer John Smith")}
                 />
                 <SuggestionChip
                   text="Should we approve a $50K credit increase for account #12345?"
                   onClick={() =>
-                    setInput('Should we approve a $50K credit increase for account #12345?')
+                    setInput(
+                      "Should we approve a $50K credit increase for account #12345?",
+                    )
                   }
                 />
                 <SuggestionChip
                   text="Analyze fraud patterns for suspicious transactions"
-                  onClick={() => setInput('Analyze fraud patterns for suspicious transactions')}
+                  onClick={() =>
+                    setInput(
+                      "Analyze fraud patterns for suspicious transactions",
+                    )
+                  }
                 />
               </VStack>
             </Box>
@@ -191,25 +394,33 @@ export function ChatInterface({
 
           {/* Chat messages */}
           {messages.map((message, idx) => (
-            <ChatMessageBubble
-              key={idx}
-              message={message}
-              onDecisionClick={onDecisionSelect}
-              onNodeClick={(nodeId, labels) => {
-                console.log('Node clicked in chat:', nodeId, labels);
-              }}
-            />
+            <Box key={idx} mb={message.role === "assistant" ? 4 : 0}>
+              <ChatMessageBubble
+                message={message}
+                isStreaming={
+                  isLoading &&
+                  idx === messages.length - 1 &&
+                  message.role === "assistant"
+                }
+                onDecisionClick={onDecisionSelect}
+                onNodeClick={(nodeId, labels) => {
+                  console.log("Node clicked in chat:", nodeId, labels);
+                }}
+              />
+            </Box>
           ))}
 
-          {/* Loading indicator */}
-          {isLoading && (
-            <Flex align="center" gap={2} p={3}>
-              <Spinner size="sm" color="brand.500" />
-              <Text fontSize="sm" color="gray.500">
-                Thinking...
-              </Text>
-            </Flex>
-          )}
+          {/* Loading indicator - only show when waiting for first response */}
+          {isLoading &&
+            messages.length > 0 &&
+            messages[messages.length - 1].role === "user" && (
+              <Flex align="center" gap={2} p={3}>
+                <Spinner size="sm" color="brand.500" />
+                <Text fontSize="sm" color="gray.500">
+                  Thinking...
+                </Text>
+              </Flex>
+            )}
 
           <div ref={messagesEndRef} />
         </VStack>
@@ -227,12 +438,10 @@ export function ChatInterface({
             rows={1}
             resize="none"
             flex={1}
-            disabled={isLoading}
           />
           <IconButton
             aria-label="Send message"
             onClick={handleSend}
-            disabled={!input.trim() || isLoading}
             colorPalette="brand"
           >
             <SendIcon />
@@ -243,70 +452,299 @@ export function ChatInterface({
   );
 }
 
+// Helper to format JSON for display
+function formatJSON(obj: unknown): string {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(obj);
+  }
+}
+
+// Tool call display component
+function ToolCallDisplay({
+  toolCall,
+  index,
+}: {
+  toolCall: ToolCall;
+  index: number;
+}) {
+  return (
+    <Box
+      key={index}
+      mt={2}
+      borderLeft="3px solid"
+      borderColor="blue.400"
+      pl={3}
+    >
+      <HStack mb={2}>
+        <Badge colorPalette="blue" fontSize="xs">
+          Tool Call
+        </Badge>
+        <Text fontWeight="bold" fontSize="sm">
+          {toolCall.name.replace("mcp__graph__", "")}
+        </Text>
+      </HStack>
+
+      <Box mb={2}>
+        <Text fontSize="xs" color="gray.600" fontWeight="semibold" mb={1}>
+          Arguments:
+        </Text>
+        <Code
+          display="block"
+          whiteSpace="pre-wrap"
+          p={2}
+          borderRadius="md"
+          fontSize="xs"
+          bg="gray.50"
+          maxH="200px"
+          overflowY="auto"
+        >
+          {formatJSON(toolCall.input)}
+        </Code>
+      </Box>
+
+      {toolCall.output !== undefined && (
+        <Box>
+          <Text fontSize="xs" color="gray.600" fontWeight="semibold" mb={1}>
+            Output:
+          </Text>
+          <Code
+            display="block"
+            whiteSpace="pre-wrap"
+            p={2}
+            borderRadius="md"
+            fontSize="xs"
+            bg="gray.50"
+            maxH="300px"
+            overflowY="auto"
+          >
+            {formatJSON(toolCall.output)}
+          </Code>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+// Agent context disclosure component
+function AgentContextDisclosure({
+  agentContext,
+}: {
+  agentContext: AgentContext;
+}) {
+  return (
+    <Box mb={3} pb={3} borderBottom="1px solid" borderColor="gray.200">
+      <Accordion.Root collapsible defaultValue={[]}>
+        <Accordion.Item value="agent-context" border="none">
+          <Accordion.ItemTrigger px={0} py={2} _hover={{ bg: "transparent" }}>
+            <Box flex="1" textAlign="left">
+              <HStack>
+                <Badge colorPalette="teal" fontSize="xs">
+                  Agent Context
+                </Badge>
+                <Text fontSize="xs" color="gray.600">
+                  View system prompt and configuration
+                </Text>
+              </HStack>
+            </Box>
+            <Accordion.ItemIndicator />
+          </Accordion.ItemTrigger>
+          <Accordion.ItemContent>
+            <Accordion.ItemBody px={0} pb={2}>
+              <VStack align="stretch" gap={3}>
+                <Box
+                  p={3}
+                  bg="teal.50"
+                  borderRadius="md"
+                  border="1px solid"
+                  borderColor="teal.200"
+                >
+                  <VStack align="stretch" gap={3}>
+                    {/* Model */}
+                    <Box>
+                      <Text
+                        fontSize="xs"
+                        color="gray.600"
+                        fontWeight="semibold"
+                        mb={1}
+                      >
+                        Model:
+                      </Text>
+                      <Badge colorPalette="teal" fontSize="xs">
+                        {agentContext.model}
+                      </Badge>
+                    </Box>
+
+                    {/* MCP Server */}
+                    <Box>
+                      <Text
+                        fontSize="xs"
+                        color="gray.600"
+                        fontWeight="semibold"
+                        mb={1}
+                      >
+                        MCP Server:
+                      </Text>
+                      <Badge colorPalette="purple" fontSize="xs">
+                        {agentContext.mcp_server}
+                      </Badge>
+                    </Box>
+
+                    {/* Available Tools */}
+                    <Box>
+                      <Text
+                        fontSize="xs"
+                        color="gray.600"
+                        fontWeight="semibold"
+                        mb={1}
+                      >
+                        Available Tools:
+                      </Text>
+                      <Flex gap={1} flexWrap="wrap">
+                        {agentContext.available_tools.map((tool, idx) => (
+                          <Badge key={idx} colorPalette="blue" fontSize="xs">
+                            {tool}
+                          </Badge>
+                        ))}
+                      </Flex>
+                    </Box>
+
+                    {/* System Prompt */}
+                    <Box>
+                      <Text
+                        fontSize="xs"
+                        color="gray.600"
+                        fontWeight="semibold"
+                        mb={1}
+                      >
+                        System Prompt:
+                      </Text>
+                      <Code
+                        display="block"
+                        whiteSpace="pre-wrap"
+                        p={2}
+                        borderRadius="md"
+                        fontSize="xs"
+                        bg="white"
+                        maxH="300px"
+                        overflowY="auto"
+                      >
+                        {agentContext.system_prompt}
+                      </Code>
+                    </Box>
+                  </VStack>
+                </Box>
+              </VStack>
+            </Accordion.ItemBody>
+          </Accordion.ItemContent>
+        </Accordion.Item>
+      </Accordion.Root>
+    </Box>
+  );
+}
+
+// Tool calls disclosure component
+function ToolCallsDisclosure({ toolCalls }: { toolCalls: ToolCall[] }) {
+  if (!toolCalls || toolCalls.length === 0) return null;
+
+  return (
+    <Box mb={3} pb={3} borderBottom="1px solid" borderColor="gray.200">
+      <Accordion.Root collapsible defaultValue={[]}>
+        <Accordion.Item value="tool-calls" border="none">
+          <Accordion.ItemTrigger px={0} py={2} _hover={{ bg: "transparent" }}>
+            <Box flex="1" textAlign="left">
+              <HStack>
+                <Badge colorPalette="purple" fontSize="xs">
+                  Tool Calls ({toolCalls.length})
+                </Badge>
+                <Text fontSize="xs" color="gray.600">
+                  View tool parameters and results
+                </Text>
+              </HStack>
+            </Box>
+            <Accordion.ItemIndicator />
+          </Accordion.ItemTrigger>
+          <Accordion.ItemContent>
+            <Accordion.ItemBody px={0} pb={2}>
+              <VStack align="stretch" gap={3}>
+                {toolCalls.map((toolCall, index) => (
+                  <Box
+                    key={index}
+                    p={3}
+                    bg="purple.50"
+                    borderRadius="md"
+                    border="1px solid"
+                    borderColor="purple.200"
+                  >
+                    <ToolCallDisplay toolCall={toolCall} index={index} />
+                  </Box>
+                ))}
+              </VStack>
+            </Accordion.ItemBody>
+          </Accordion.ItemContent>
+        </Accordion.Item>
+      </Accordion.Root>
+    </Box>
+  );
+}
+
 // Chat message bubble component
 function ChatMessageBubble({
   message,
+  isStreaming,
   onDecisionClick,
   onNodeClick,
 }: {
   message: MessageWithGraph;
+  isStreaming?: boolean;
   onDecisionClick: (decision: Decision) => void;
   onNodeClick: (nodeId: string, labels: string[]) => void;
 }) {
-  const isUser = message.role === 'user';
+  const isUser = message.role === "user";
 
   return (
     <Box
-      alignSelf={isUser ? 'flex-end' : 'flex-start'}
+      alignSelf={isUser ? "flex-end" : "flex-start"}
       maxW="85%"
-      w={message.graphData ? '100%' : 'auto'}
+      w={
+        message.graphData ||
+        (!isUser && (message.agentContext || message.toolCalls?.length))
+          ? "100%"
+          : "auto"
+      }
+      minW={
+        !isUser && (message.agentContext || message.toolCalls?.length)
+          ? "60%"
+          : "auto"
+      }
     >
       <Box
-        bg={isUser ? 'brand.500' : 'bg.subtle'}
-        color={isUser ? 'white' : 'inherit'}
+        bg={isUser ? "brand.500" : "bg.subtle"}
+        color={isUser ? "white" : "inherit"}
         px={4}
         py={3}
         borderRadius="lg"
-        borderBottomRightRadius={isUser ? 'sm' : 'lg'}
-        borderBottomLeftRadius={isUser ? 'lg' : 'sm'}
+        borderBottomRightRadius={isUser ? "sm" : "lg"}
+        borderBottomLeftRadius={isUser ? "lg" : "sm"}
       >
-        {/* Tool calls indicator */}
-        {message.toolCalls && message.toolCalls.length > 0 && (
-          <HStack gap={1} mb={2} flexWrap="wrap">
-            {message.toolCalls.map((tool, idx) => (
-              <Badge key={idx} size="sm" colorPalette="purple" variant="subtle">
-                {tool.name.replace('mcp__graph__', '')}
-              </Badge>
-            ))}
-          </HStack>
+        {/* Agent context disclosure (for assistant messages) */}
+        {!isUser && message.agentContext && (
+          <AgentContextDisclosure agentContext={message.agentContext} />
+        )}
+
+        {/* Tool calls disclosure (for assistant messages) */}
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+          <ToolCallsDisclosure toolCalls={message.toolCalls} />
         )}
 
         {/* Message content */}
-        <Text whiteSpace="pre-wrap" fontSize="sm">
-          {message.content}
-        </Text>
-
-        {/* Decision trace badge */}
-        {message.decision && (
-          <Box
-            mt={3}
-            p={2}
-            bg={isUser ? 'brand.600' : 'bg.surface'}
-            borderRadius="md"
-            cursor="pointer"
-            onClick={() => onDecisionClick(message.decision!)}
-            _hover={{ opacity: 0.8 }}
-          >
-            <HStack gap={2}>
-              <Badge colorPalette="purple" size="sm">
-                Decision Recorded
-              </Badge>
-              <Text fontSize="xs" color={isUser ? 'brand.100' : 'gray.500'}>
-                {message.decision.decision_type.replace(/_/g, ' ')}
-              </Text>
-            </HStack>
-          </Box>
-        )}
+        <Flex align="flex-start" gap={2}>
+          <Text whiteSpace="pre-wrap" fontSize="sm" flex={1}>
+            {message.content}
+          </Text>
+          {isStreaming && <Spinner size="xs" color="brand.500" />}
+        </Flex>
       </Box>
 
       {/* Inline graph visualization */}
@@ -318,8 +756,8 @@ function ChatMessageBubble({
             onNodeClick={onNodeClick}
           />
           <Text fontSize="xs" color="gray.500" mt={1}>
-            {message.graphData.nodes.length} nodes, {message.graphData.relationships.length}{' '}
-            relationships
+            {message.graphData.nodes.length} nodes,{" "}
+            {message.graphData.relationships.length} relationships
           </Text>
         </Box>
       )}
@@ -328,13 +766,19 @@ function ChatMessageBubble({
 }
 
 // Suggestion chip component
-function SuggestionChip({ text, onClick }: { text: string; onClick: () => void }) {
+function SuggestionChip({
+  text,
+  onClick,
+}: {
+  text: string;
+  onClick: () => void;
+}) {
   return (
     <Text
       fontSize="sm"
       color="brand.600"
       cursor="pointer"
-      _hover={{ textDecoration: 'underline' }}
+      _hover={{ textDecoration: "underline" }}
       onClick={onClick}
     >
       → {text}

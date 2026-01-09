@@ -3,12 +3,15 @@ FastAPI application for the Context Graph demo.
 Provides REST API endpoints for the frontend and agent interactions.
 """
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 
 from .agent import ContextGraphAgent
 from .config import config
@@ -52,7 +55,12 @@ app = FastAPI(
 # CORS middleware for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,8 +96,13 @@ async def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
+        # Convert conversation history to list of dicts
+        history = [
+            {"role": msg.role, "content": msg.content} for msg in request.conversation_history
+        ]
+
         async with ContextGraphAgent() as agent:
-            result = await agent.query(request.message)
+            result = await agent.query(request.message, conversation_history=history)
 
             return ChatResponse(
                 response=result["response"],
@@ -99,6 +112,77 @@ async def chat(request: ChatRequest):
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Send a message to the Claude agent with streaming response.
+    Returns Server-Sent Events (SSE) for real-time streaming.
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+
+    async def event_generator():
+        try:
+            # Convert conversation history to list of dicts
+            history = [
+                {"role": msg.role, "content": msg.content} for msg in request.conversation_history
+            ]
+
+            async with ContextGraphAgent() as agent:
+                async for event in agent.query_stream(
+                    request.message, conversation_history=history
+                ):
+                    # Send different event types
+                    if event["type"] == "agent_context":
+                        yield {
+                            "event": "agent_context",
+                            "data": json.dumps(event["context"]),
+                        }
+                    elif event["type"] == "text":
+                        yield {
+                            "event": "text",
+                            "data": json.dumps({"content": event["content"]}),
+                        }
+                    elif event["type"] == "tool_use":
+                        yield {
+                            "event": "tool_use",
+                            "data": json.dumps(
+                                {
+                                    "name": event["name"],
+                                    "input": event.get("input", {}),
+                                }
+                            ),
+                        }
+                    elif event["type"] == "tool_result":
+                        yield {
+                            "event": "tool_result",
+                            "data": json.dumps(
+                                {
+                                    "name": event["name"],
+                                    "output": event.get("output"),
+                                }
+                            ),
+                        }
+                    elif event["type"] == "done":
+                        yield {
+                            "event": "done",
+                            "data": json.dumps(
+                                {
+                                    "session_id": session_id,
+                                    "tool_calls": event.get("tool_calls", []),
+                                    "decisions_made": event.get("decisions_made", []),
+                                }
+                            ),
+                        }
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+
+    return EventSourceResponse(event_generator())
 
 
 # ============================================
@@ -142,6 +226,24 @@ async def get_customer_decisions(
 # ============================================
 # DECISION ENDPOINTS
 # ============================================
+
+
+@app.get("/api/decisions")
+async def list_decisions(
+    category: Optional[str] = None,
+    decision_type: Optional[str] = None,
+    limit: int = 20,
+):
+    """List recent decisions with optional filters."""
+    try:
+        decisions = context_graph_client.list_decisions(
+            category=category,
+            decision_type=decision_type,
+            limit=limit,
+        )
+        return {"decisions": decisions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/decisions/{decision_id}")
@@ -268,6 +370,47 @@ async def get_statistics():
     try:
         stats = context_graph_client.get_statistics()
         return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/graph/expand/{node_id}", response_model=GraphData)
+async def expand_node(node_id: str, limit: int = 50):
+    """Get all nodes connected to a given node (for graph expansion on double-click)."""
+    try:
+        graph = context_graph_client.get_connected_nodes(node_id=node_id, limit=limit)
+        return graph
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/graph/relationships")
+async def get_relationships_between(node_ids: list[str]):
+    """Get all relationships between a set of nodes."""
+    try:
+        relationships = context_graph_client.get_relationships_between_nodes(node_ids)
+        return {
+            "relationships": [
+                {
+                    "id": rel.id,
+                    "type": rel.type,
+                    "startNodeId": rel.start_node_id,
+                    "endNodeId": rel.end_node_id,
+                    "properties": rel.properties,
+                }
+                for rel in relationships
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/graph/schema")
+async def get_graph_schema():
+    """Get the graph schema for visualization."""
+    try:
+        schema = context_graph_client.get_schema()
+        return schema
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

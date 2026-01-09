@@ -2,7 +2,7 @@
 name = "context-graph"
 version = "0.1.0"
 description = "Context Graph Demo - Decision traces for AI agents using Neo4j"
-readme = "README.md"
+readme = "../README.md"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
@@ -14,6 +14,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "faker>=33.0.0",
     "httpx>=0.28.0",
+    "sse-starlette>=2.0.0",
 ]
 
 [project.optional-dependencies]

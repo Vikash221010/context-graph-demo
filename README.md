@@ -41,10 +41,9 @@ Combine semantic similarity (text embeddings) with structural similarity (FastRP
 
 ## Prerequisites
 
-- Docker & Docker Compose
-- Python 3.11+
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
 - Node.js 18+
-- Neo4j Enterprise License (for GDS plugin)
+- Neo4j AuraDS instance (or local Neo4j Enterprise with GDS plugin)
 - Anthropic API Key
 - OpenAI API Key (for embeddings)
 
@@ -56,44 +55,58 @@ Combine semantic similarity (text embeddings) with structural similarity (FastRP
 cd context-graph
 
 # Create environment file
-cat > .env << EOF
-NEO4J_URI=bolt://localhost:7687
+cat > .env << 'EOF'
+# Neo4j Connection
+NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
 NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=password
+NEO4J_PASSWORD=your_neo4j_password
+
+# Anthropic API Key (for Claude Agent SDK)
 ANTHROPIC_API_KEY=your_anthropic_key
+
+# OpenAI API Key (for text embeddings)
 OPENAI_API_KEY=your_openai_key
 EOF
 ```
 
-### 2. Start Neo4j with GDS
-
-```bash
-docker-compose up -d
-```
-
-Wait for Neo4j to be ready (check http://localhost:7474).
-
-### 3. Initialize Schema and Sample Data
+### 2. Install Backend Dependencies
 
 ```bash
 cd backend
 
-# Install dependencies
-pip install -e .
+# Create virtual environment and install dependencies with uv
+uv venv
+uv pip install -e .
+```
 
-# Run schema (from Neo4j Browser or cypher-shell)
-cat ../cypher/schema.cypher | cypher-shell -u neo4j -p password
+### 3. Generate Sample Data
 
-# Generate sample data
+```bash
+cd backend
+source .venv/bin/activate
+export $(grep -v '^#' ../.env | xargs)
 python scripts/generate_sample_data.py
 ```
+
+This creates:
+- 200 persons
+- 350 accounts  
+- 2000 transactions
+- 600 decisions with causal chains
+- 50 organizations
+- 30 employees
+- 15 policies
 
 ### 4. Start Backend
 
 ```bash
 cd backend
-uvicorn app.main:app --reload --port 8000
+source .venv/bin/activate
+export $(grep -v '^#' ../.env | xargs)
+uvicorn app.main:app --port 8000
 ```
+
+Backend runs at http://localhost:8000
 
 ### 5. Start Frontend
 
@@ -103,23 +116,33 @@ npm install
 npm run dev
 ```
 
-Visit http://localhost:3000
+Frontend runs at http://localhost:3000
 
-## Using Neo4j AuraDS (Cloud)
+## Using Neo4j AuraDS (Recommended)
 
-For production or if you prefer cloud-hosted Neo4j with GDS:
+For the best experience with GDS algorithms:
 
 1. Create an AuraDS instance at https://console.neo4j.io
 2. Note the connection URI (format: `neo4j+s://xxxx.databases.neo4j.io`)
-3. Update your `.env`:
+3. Update your `.env` with the connection details
+
+AuraDS includes all GDS algorithms (FastRP, KNN, Node Similarity, Louvain, PageRank) without additional configuration.
+
+## Using Local Neo4j with Docker
+
+If you have a Neo4j Enterprise license:
 
 ```bash
-NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_aura_password
+docker-compose up -d
 ```
 
-AuraDS includes all GDS algorithms without additional configuration.
+Wait for Neo4j to be ready at http://localhost:7474, then update `.env`:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=password
+```
 
 ## Demo Scenarios
 
@@ -160,6 +183,68 @@ Agent:
 4. Links to applicable policies
 ```
 
+
+Best demo messages:**
+
+1. **Credit Decision with Precedent Lookup:**
+```
+Should we approve a credit limit increase for Jessica Norris? She's requesting a $25,000 limit increase.
+```
+(Jessica Norris has the highest risk score at 0.77, which will trigger precedent searches and policy checks)
+
+2. **Fraud Pattern Analysis:**
+```
+Analyze the fraud decision history for Jacob Fitzpatrick and find similar cases
+```
+(High-risk customer with multiple source systems)
+
+3. **Causal Chain Investigation:**
+```
+What decisions have been made about Amanda Smith and what caused them?
+```
+(She has the most decisions - 7 total - good for showing decision traces)
+
+4. **Policy-Based Decision:**
+```
+A customer wants to make a $15,000 wire transfer. What policies apply and are there similar past decisions?
+```
+(Triggers High-Value Transaction Review policy and precedent search)
+
+5. **Exception Request:**
+```
+We need to override the trading limit for Katherine Miller. Find precedents for similar exceptions.
+```
+(Shows exception handling with precedent lookup)
+
+**The most compelling single message that demonstrates multiple benefits:**
+
+```
+Should we approve a credit limit increase for Jessica Norris? She has a high risk score and is requesting $25,000. Find similar past decisions and applicable policies.
+```
+
+This message will:
+- Search for the customer (demonstrating entity lookup)
+- Find her risk score and decision history
+- Search for precedent decisions using semantic/structural similarity
+- Look up applicable policies (Credit Limit Policy)
+- Show the causal reasoning chain
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check |
+| `GET /api/customers/search?query=` | Search customers |
+| `GET /api/customers/{id}` | Get customer details |
+| `GET /api/customers/{id}/decisions` | Get customer decisions |
+| `GET /api/decisions/{id}` | Get decision details |
+| `GET /api/decisions/{id}/similar` | Find similar decisions |
+| `GET /api/decisions/{id}/causal-chain` | Get causal chain |
+| `GET /api/graph` | Get graph visualization data |
+| `GET /api/graph/statistics` | Get graph statistics |
+| `GET /api/policies` | List policies |
+| `POST /api/chat` | Chat with AI agent |
+
 ## Project Structure
 
 ```
@@ -185,7 +270,8 @@ context-graph/
 ├── cypher/
 │   ├── schema.cypher            # Neo4j schema
 │   └── gds_projections.cypher   # GDS algorithms
-└── docker-compose.yml
+├── docker-compose.yml           # Local Neo4j setup
+└── .env                         # Environment variables
 ```
 
 ## Agent Tools (MCP)
@@ -203,6 +289,7 @@ The Claude Agent has access to 9 custom tools:
 | `detect_fraud_patterns` | Graph-based fraud analysis |
 | `get_policy` | Get current policy rules |
 | `execute_cypher` | Read-only Cypher for custom analysis |
+| `get_schema` | Retrieve the current Neo4j schema |
 
 ## Neo4j Data Model
 

@@ -8,18 +8,26 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+class ConversationMessage(BaseModel):
+    """A message in the conversation history."""
+
+    role: str  # 'user' or 'assistant'
+    content: str
+
+
 class ChatRequest(BaseModel):
     """Request to send a message to the AI agent."""
 
     message: str
     session_id: Optional[str] = None
+    conversation_history: list[ConversationMessage] = Field(default_factory=list)
 
 
 class ToolCall(BaseModel):
     """Record of a tool call made by the agent."""
 
     name: str
-    arguments: dict[str, Any]
+    input: dict[str, Any] = Field(default_factory=dict)
     output: Optional[Any] = None
 
 
@@ -59,9 +67,11 @@ class GraphRelationship(BaseModel):
 
     id: str
     type: str
-    start_node_id: str
-    end_node_id: str
+    start_node_id: str = Field(alias="startNodeId", serialization_alias="startNodeId")
+    end_node_id: str = Field(alias="endNodeId", serialization_alias="endNodeId")
     properties: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
 
 
 class GraphData(BaseModel):
@@ -69,6 +79,8 @@ class GraphData(BaseModel):
 
     nodes: list[GraphNode]
     relationships: list[GraphRelationship]
+
+    model_config = {"by_alias": True}
 
 
 class CustomerSearchResult(BaseModel):

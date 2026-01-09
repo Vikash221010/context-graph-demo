@@ -4,11 +4,13 @@ Handles entities, decisions, and causal relationships.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from neo4j import AsyncGraphDatabase, GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
+from neo4j.time import Date as Neo4jDate
+from neo4j.time import DateTime as Neo4jDateTime
 
 from .config import config
 from .models import (
@@ -21,6 +23,26 @@ from .models import (
     Person,
     Transaction,
 )
+
+
+def convert_neo4j_value(value: Any) -> Any:
+    """Convert Neo4j types to JSON-serializable Python types."""
+    if isinstance(value, Neo4jDateTime):
+        return value.isoformat()
+    elif isinstance(value, Neo4jDate):
+        return value.isoformat()
+    elif isinstance(value, (datetime, date)):
+        return value.isoformat()
+    elif isinstance(value, list):
+        return [convert_neo4j_value(v) for v in value]
+    elif isinstance(value, dict):
+        return {k: convert_neo4j_value(v) for k, v in value.items()}
+    return value
+
+
+def convert_node_properties(props: dict) -> dict:
+    """Convert all properties in a node to JSON-serializable types."""
+    return {k: convert_neo4j_value(v) for k, v in props.items()}
 
 
 class ContextGraphClient:
@@ -256,6 +278,49 @@ class ContextGraphClient:
 
         return decision_id
 
+    def list_decisions(
+        self,
+        category: Optional[str] = None,
+        decision_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """List recent decisions with optional filters."""
+        filters = []
+        params = {"limit": limit}
+
+        if category:
+            filters.append("d.category = $category")
+            params["category"] = category
+        if decision_type:
+            filters.append("d.decision_type = $decision_type")
+            params["decision_type"] = decision_type
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                f"""
+                MATCH (d:Decision)
+                {where_clause}
+                OPTIONAL MATCH (d)-[:ABOUT]->(target)
+                WITH d, collect(DISTINCT labels(target)[0]) AS target_types
+                RETURN d {{
+                    .*,
+                    target_types: target_types
+                }} AS decision
+                ORDER BY d.decision_timestamp DESC
+                LIMIT $limit
+                """,
+                params,
+            )
+            decisions = []
+            for record in result:
+                decision = dict(record["decision"])
+                # Convert Neo4j types
+                decision = convert_node_properties(decision)
+                decisions.append(decision)
+            return decisions
+
     def get_causal_chain(
         self,
         decision_id: str,
@@ -351,27 +416,25 @@ class ContextGraphClient:
     ) -> GraphData:
         """Get graph data for NVL visualization."""
         with self.driver.session(database=self.database) as session:
-            if center_node_id and center_node_type:
-                # Get subgraph centered on a specific node
+            if center_node_id:
+                # Get subgraph centered on a specific node using variable-length paths
+                # Support both UUID property and element ID
                 result = session.run(
-                    f"""
-                    MATCH (center:{center_node_type} {{id: $center_id}})
-                    CALL apoc.path.subgraphAll(center, {{
-                        maxLevel: $depth,
-                        relationshipFilter: null,
-                        labelFilter: null
-                    }})
-                    YIELD nodes, relationships
-                    UNWIND nodes AS node
-                    WITH collect(DISTINCT node) AS allNodes, relationships
-                    UNWIND relationships AS rel
-                    WITH allNodes, collect(DISTINCT rel) AS allRels
-                    RETURN allNodes[0..$limit] AS nodes, allRels AS relationships
+                    """
+                    MATCH (center)
+                    WHERE center.id = $center_id OR elementId(center) = $center_id
+                    OPTIONAL MATCH (center)-[r1]-(n1)
+                    OPTIONAL MATCH (n1)-[r2]-(n2) WHERE n2 <> center
+                    WITH center,
+                         collect(DISTINCT n1) + collect(DISTINCT n2) AS connectedNodes,
+                         collect(DISTINCT r1) + collect(DISTINCT r2) AS allRels
+                    WITH [center] + connectedNodes[0..$limit] AS nodes, allRels AS relationships
+                    RETURN nodes, relationships
                     """,
-                    {"center_id": center_node_id, "depth": depth, "limit": limit},
+                    {"center_id": center_node_id, "limit": limit},
                 )
             else:
-                # Get a sample of the graph
+                # Get a sample of the graph - mix of different node types
                 decision_filter = "" if include_decisions else "WHERE NOT 'Decision' IN labels(n)"
                 result = session.run(
                     f"""
@@ -381,7 +444,7 @@ class ContextGraphClient:
                     OPTIONAL MATCH (n)-[r]-(m)
                     WITH collect(DISTINCT n) + collect(DISTINCT m) AS nodes,
                          collect(DISTINCT r) AS relationships
-                    RETURN nodes, relationships
+                    RETURN nodes[0..$limit] AS nodes, relationships
                     """,
                     {"limit": limit},
                 )
@@ -391,30 +454,125 @@ class ContextGraphClient:
                 return GraphData(nodes=[], relationships=[])
 
             nodes = []
+            seen_node_ids = set()
             for node in record["nodes"] or []:
-                if node:
+                if node and node.element_id not in seen_node_ids:
+                    seen_node_ids.add(node.element_id)
                     nodes.append(
                         GraphNode(
                             id=str(node.element_id),
                             labels=list(node.labels),
-                            properties=dict(node),
+                            properties=convert_node_properties(dict(node)),
                         )
                     )
 
             relationships = []
+            seen_rel_ids = set()
             for rel in record["relationships"] or []:
-                if rel:
+                if rel is not None and rel.element_id not in seen_rel_ids:
+                    seen_rel_ids.add(rel.element_id)
                     relationships.append(
                         GraphRelationship(
                             id=str(rel.element_id),
                             type=rel.type,
                             start_node_id=str(rel.start_node.element_id),
                             end_node_id=str(rel.end_node.element_id),
-                            properties=dict(rel),
+                            properties=convert_node_properties(dict(rel)),
                         )
                     )
 
             return GraphData(nodes=nodes, relationships=relationships)
+
+    def get_connected_nodes(
+        self,
+        node_id: str,
+        limit: int = 50,
+    ) -> GraphData:
+        """Get all nodes directly connected to a given node."""
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (center)
+                WHERE center.id = $node_id OR elementId(center) = $node_id
+                OPTIONAL MATCH (center)-[r]-(connected)
+                WITH center, collect(DISTINCT connected)[0..$limit] AS connectedNodes,
+                     collect(DISTINCT r) AS rels
+                RETURN [center] + connectedNodes AS nodes, rels AS relationships
+                """,
+                {"node_id": node_id, "limit": limit},
+            )
+
+            record = result.single()
+            if not record:
+                return GraphData(nodes=[], relationships=[])
+
+            nodes = []
+            seen_node_ids = set()
+            for node in record["nodes"] or []:
+                if node and node.element_id not in seen_node_ids:
+                    seen_node_ids.add(node.element_id)
+                    nodes.append(
+                        GraphNode(
+                            id=str(node.element_id),
+                            labels=list(node.labels),
+                            properties=convert_node_properties(dict(node)),
+                        )
+                    )
+
+            relationships = []
+            seen_rel_ids = set()
+            for rel in record["relationships"] or []:
+                if rel is not None and rel.element_id not in seen_rel_ids:
+                    seen_rel_ids.add(rel.element_id)
+                    relationships.append(
+                        GraphRelationship(
+                            id=str(rel.element_id),
+                            type=rel.type,
+                            start_node_id=str(rel.start_node.element_id),
+                            end_node_id=str(rel.end_node.element_id),
+                            properties=convert_node_properties(dict(rel)),
+                        )
+                    )
+
+            return GraphData(nodes=nodes, relationships=relationships)
+
+    def get_relationships_between_nodes(
+        self,
+        node_ids: list[str],
+    ) -> list[GraphRelationship]:
+        """Get all relationships between a set of nodes."""
+        if len(node_ids) < 2:
+            return []
+
+        with self.driver.session(database=self.database) as session:
+            # Query for relationships where both endpoints are in our node list
+            result = session.run(
+                """
+                MATCH (a)-[r]->(b)
+                WHERE (a.id IN $node_ids OR elementId(a) IN $node_ids)
+                  AND (b.id IN $node_ids OR elementId(b) IN $node_ids)
+                RETURN DISTINCT r
+                """,
+                {"node_ids": node_ids},
+            )
+
+            relationships = []
+            seen_rel_ids = set()
+            for record in result:
+                rel = record["r"]
+                if rel is not None and rel.element_id not in seen_rel_ids:
+                    seen_rel_ids.add(rel.element_id)
+                    relationships.append(
+                        GraphRelationship(
+                            id=str(rel.element_id),
+                            type=rel.type,
+                            start_node_id=str(rel.start_node.element_id),
+                            end_node_id=str(rel.end_node.element_id),
+                            properties=convert_node_properties(dict(rel)),
+                        )
+                    )
+
+            return relationships
 
     # ============================================
     # STATISTICS
@@ -470,6 +628,105 @@ class ContextGraphClient:
         with self.driver.session(database=self.database) as session:
             result = session.run(cypher, parameters or {})
             return [dict(record) for record in result]
+
+    def get_schema(self) -> dict[str, Any]:
+        """Get the graph database schema including node labels, relationship types, and properties."""
+        with self.driver.session(database=self.database) as session:
+            # Get node labels and their properties
+            node_labels_result = session.run("""
+                CALL db.labels() YIELD label
+                RETURN label ORDER BY label
+            """)
+            node_labels = [record["label"] for record in node_labels_result]
+
+            # Get relationship types
+            rel_types_result = session.run("""
+                CALL db.relationshipTypes() YIELD relationshipType
+                RETURN relationshipType ORDER BY relationshipType
+            """)
+            relationship_types = [record["relationshipType"] for record in rel_types_result]
+
+            # Get property keys
+            prop_keys_result = session.run("""
+                CALL db.propertyKeys() YIELD propertyKey
+                RETURN propertyKey ORDER BY propertyKey
+            """)
+            property_keys = [record["propertyKey"] for record in prop_keys_result]
+
+            # Get node counts by label
+            node_counts = {}
+            for label in node_labels:
+                count_result = session.run(f"MATCH (n:`{label}`) RETURN count(n) as count")
+                node_counts[label] = count_result.single()["count"]
+
+            # Get relationship counts by type
+            rel_counts = {}
+            for rel_type in relationship_types:
+                count_result = session.run(
+                    f"MATCH ()-[r:`{rel_type}`]->() RETURN count(r) as count"
+                )
+                rel_counts[rel_type] = count_result.single()["count"]
+
+            # Get relationship patterns (which labels connect via which relationship types)
+            patterns_result = session.run("""
+                MATCH (a)-[r]->(b)
+                WITH labels(a) AS from_labels, type(r) AS rel_type, labels(b) AS to_labels, count(*) AS count
+                UNWIND from_labels AS from_label
+                UNWIND to_labels AS to_label
+                RETURN DISTINCT from_label, rel_type, to_label, sum(count) AS count
+                ORDER BY from_label, rel_type, to_label
+            """)
+            relationship_patterns = [
+                {
+                    "from_label": record["from_label"],
+                    "rel_type": record["rel_type"],
+                    "to_label": record["to_label"],
+                    "count": record["count"],
+                }
+                for record in patterns_result
+            ]
+
+            # Get indexes
+            indexes_result = session.run("""
+                SHOW INDEXES YIELD name, type, labelsOrTypes, properties, state
+                RETURN name, type, labelsOrTypes, properties, state
+            """)
+            indexes = [
+                {
+                    "name": record["name"],
+                    "type": record["type"],
+                    "labels_or_types": record["labelsOrTypes"],
+                    "properties": record["properties"],
+                    "state": record["state"],
+                }
+                for record in indexes_result
+            ]
+
+            # Get constraints
+            constraints_result = session.run("""
+                SHOW CONSTRAINTS YIELD name, type, labelsOrTypes, properties
+                RETURN name, type, labelsOrTypes, properties
+            """)
+            constraints = [
+                {
+                    "name": record["name"],
+                    "type": record["type"],
+                    "labels_or_types": record["labelsOrTypes"],
+                    "properties": record["properties"],
+                }
+                for record in constraints_result
+            ]
+
+            return {
+                "node_labels": node_labels,
+                "node_counts": node_counts,
+                "relationship_types": relationship_types,
+                "relationship_counts": rel_counts,
+                "relationship_patterns": relationship_patterns,
+                "property_keys": property_keys,
+                "indexes": indexes,
+                "constraints": constraints,
+            }
 
 
 # Singleton instance
