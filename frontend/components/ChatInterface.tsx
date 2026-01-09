@@ -114,10 +114,10 @@ export function ChatInterface({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Scroll to bottom when messages change
-  useEffect(() => {
+  // Scroll to bottom only when user sends a new message (not during streaming updates)
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, []);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -138,6 +138,7 @@ export function ChatInterface({
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
+    scrollToBottom();
 
     // Create a placeholder for the streaming assistant message
     const assistantMessageIndex = messages.length + 1;
@@ -172,7 +173,7 @@ export function ChatInterface({
             break;
 
           case "text":
-            fullContent += event.content;
+            fullContent += event.content + "\n\n";
             setMessages((prev) => {
               const updated = [...prev];
               updated[assistantMessageIndex] = {
@@ -333,7 +334,14 @@ export function ChatInterface({
     } finally {
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, onConversationUpdate, onGraphUpdate]);
+  }, [
+    input,
+    isLoading,
+    messages,
+    onConversationUpdate,
+    onGraphUpdate,
+    scrollToBottom,
+  ]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
