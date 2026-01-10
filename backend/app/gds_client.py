@@ -28,32 +28,69 @@ class GDSClient:
     # GRAPH PROJECTION MANAGEMENT
     # ============================================
 
-    def create_decision_graph_projection(self) -> dict:
-        """Create the decision graph projection for GDS algorithms."""
+    def create_decision_graph_projection(self, include_embeddings: bool = False) -> dict:
+        """Create the decision graph projection for GDS algorithms.
+
+        Args:
+            include_embeddings: If True, load existing fastrp_embedding properties.
+                              If False, create without embeddings (for generating new ones).
+        """
         with self.driver.session(database=self.database) as session:
             # Drop if exists
             session.run("CALL gds.graph.drop('decision-graph', false) YIELD graphName")
 
-            result = session.run(
-                """
-                CALL gds.graph.project(
-                    'decision-graph',
-                    ['Decision', 'Person', 'Account', 'Transaction', 'Organization', 'Policy', 'Employee'],
-                    {
-                        ABOUT: {orientation: 'UNDIRECTED'},
-                        CAUSED: {orientation: 'NATURAL', properties: ['confidence']},
-                        INFLUENCED: {orientation: 'NATURAL', properties: ['weight']},
-                        PRECEDENT_FOR: {orientation: 'NATURAL', properties: ['similarity_score']},
-                        OWNS: {orientation: 'UNDIRECTED'},
-                        MADE_BY: {orientation: 'NATURAL'},
-                        APPLIED_POLICY: {orientation: 'NATURAL'},
-                        FROM_ACCOUNT: {orientation: 'NATURAL'},
-                        TO_ACCOUNT: {orientation: 'NATURAL'}
-                    }
-                ) YIELD graphName, nodeCount, relationshipCount
-                RETURN graphName, nodeCount, relationshipCount
-                """
-            )
+            if include_embeddings:
+                # Load with existing embeddings for KNN queries
+                result = session.run(
+                    """
+                    CALL gds.graph.project(
+                        'decision-graph',
+                        {
+                            Decision: {properties: ['fastrp_embedding']},
+                            Person: {properties: ['fastrp_embedding']},
+                            Account: {properties: ['fastrp_embedding']},
+                            Transaction: {properties: ['fastrp_embedding']},
+                            Organization: {},
+                            Policy: {},
+                            Employee: {}
+                        },
+                        {
+                            ABOUT: {orientation: 'UNDIRECTED'},
+                            CAUSED: {orientation: 'NATURAL', properties: ['confidence']},
+                            INFLUENCED: {orientation: 'NATURAL', properties: ['weight']},
+                            PRECEDENT_FOR: {orientation: 'NATURAL', properties: ['similarity_score']},
+                            OWNS: {orientation: 'UNDIRECTED'},
+                            MADE_BY: {orientation: 'NATURAL'},
+                            APPLIED_POLICY: {orientation: 'NATURAL'},
+                            FROM_ACCOUNT: {orientation: 'NATURAL'},
+                            TO_ACCOUNT: {orientation: 'NATURAL'}
+                        }
+                    ) YIELD graphName, nodeCount, relationshipCount
+                    RETURN graphName, nodeCount, relationshipCount
+                    """
+                )
+            else:
+                # Create without embeddings (for generating new FastRP embeddings)
+                result = session.run(
+                    """
+                    CALL gds.graph.project(
+                        'decision-graph',
+                        ['Decision', 'Person', 'Account', 'Transaction', 'Organization', 'Policy', 'Employee'],
+                        {
+                            ABOUT: {orientation: 'UNDIRECTED'},
+                            CAUSED: {orientation: 'NATURAL', properties: ['confidence']},
+                            INFLUENCED: {orientation: 'NATURAL', properties: ['weight']},
+                            PRECEDENT_FOR: {orientation: 'NATURAL', properties: ['similarity_score']},
+                            OWNS: {orientation: 'UNDIRECTED'},
+                            MADE_BY: {orientation: 'NATURAL'},
+                            APPLIED_POLICY: {orientation: 'NATURAL'},
+                            FROM_ACCOUNT: {orientation: 'NATURAL'},
+                            TO_ACCOUNT: {orientation: 'NATURAL'}
+                        }
+                    ) YIELD graphName, nodeCount, relationshipCount
+                    RETURN graphName, nodeCount, relationshipCount
+                    """
+                )
             record = result.single()
             return dict(record) if record else {}
 
@@ -67,13 +104,11 @@ class GDSClient:
                 """
                 CALL gds.graph.project(
                     'entity-graph',
-                    ['Person', 'Account', 'Transaction', 'Organization'],
+                    ['Person', 'Account', 'Transaction'],
                     {
                         OWNS: {orientation: 'UNDIRECTED'},
-                        FROM_ACCOUNT: {orientation: 'NATURAL'},
-                        TO_ACCOUNT: {orientation: 'NATURAL'},
-                        INVOLVING: {orientation: 'UNDIRECTED'},
-                        RELATED_TO: {orientation: 'UNDIRECTED'}
+                        FROM_ACCOUNT: {orientation: 'UNDIRECTED'},
+                        TO_ACCOUNT: {orientation: 'UNDIRECTED'}
                     }
                 ) YIELD graphName, nodeCount, relationshipCount
                 RETURN graphName, nodeCount, relationshipCount
@@ -103,7 +138,11 @@ class GDSClient:
         graph_name: str = "decision-graph",
         node_labels: Optional[list[str]] = None,
     ) -> dict:
-        """Generate FastRP embeddings for nodes."""
+        """Generate FastRP embeddings for nodes.
+
+        Note: This method expects the graph projection to already exist.
+        It's called internally by _ensure_decision_graph_exists.
+        """
         node_labels = node_labels or ["Decision", "Person", "Account", "Transaction"]
 
         with self.driver.session(database=self.database) as session:
@@ -113,7 +152,6 @@ class GDSClient:
                     embeddingDimension: $dimensions,
                     iterationWeights: [0.0, 1.0, 1.0, 0.8, 0.6],
                     normalizationStrength: 0.5,
-                    randomSeed: 42,
                     mutateProperty: 'fastrp_embedding'
                 }) YIELD nodePropertiesWritten, computeMillis
                 RETURN nodePropertiesWritten, computeMillis
@@ -131,7 +169,11 @@ class GDSClient:
         graph_name: str = "decision-graph",
         node_labels: Optional[list[str]] = None,
     ) -> dict:
-        """Write FastRP embeddings back to the database."""
+        """Write FastRP embeddings back to the database.
+
+        Note: This method expects the graph projection to already exist with embeddings.
+        It's called internally by _ensure_decision_graph_exists.
+        """
         node_labels = node_labels or ["Decision", "Person", "Account", "Transaction"]
 
         with self.driver.session(database=self.database) as session:
@@ -157,6 +199,10 @@ class GDSClient:
         graph_name: str = "decision-graph",
     ) -> list[dict]:
         """Find similar decisions using KNN on FastRP embeddings."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -164,8 +210,7 @@ class GDSClient:
                     nodeLabels: ['Decision'],
                     nodeProperties: ['fastrp_embedding'],
                     topK: $limit,
-                    sampleRate: 1.0,
-                    randomSeed: 42
+                    sampleRate: 1.0
                 }) YIELD node1, node2, similarity
                 WITH gds.util.asNode(node1) AS decision1, gds.util.asNode(node2) AS decision2, similarity
                 WHERE decision1.id = $decision_id
@@ -192,6 +237,10 @@ class GDSClient:
         top_k: int = 5,
     ) -> dict:
         """Run KNN on all nodes and create SIMILAR_TO relationships."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -290,8 +339,60 @@ class GDSClient:
             return [dict(record) for record in result]
 
     # ============================================
-    # FRAUD PATTERN DETECTION
+    # GRAPH PROJECTION HELPERS
     # ============================================
+
+    def _check_embeddings_exist(self) -> bool:
+        """Check if fastrp_embedding properties exist on Decision nodes."""
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (d:Decision)
+                WHERE d.fastrp_embedding IS NOT NULL
+                RETURN count(d) > 0 AS has_embeddings
+                """
+            )
+            record = result.single()
+            return record["has_embeddings"] if record else False
+
+    def _ensure_decision_graph_exists(self) -> None:
+        """Ensure the decision-graph projection exists with embeddings.
+
+        If embeddings don't exist in the database, this will:
+        1. Create the graph projection without embeddings
+        2. Generate FastRP embeddings
+        3. Write embeddings back to database
+        4. Recreate the graph projection with embeddings
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                CALL gds.graph.exists('decision-graph') YIELD exists
+                RETURN exists
+                """
+            )
+            record = result.single()
+            graph_exists = record and record["exists"]
+
+        if graph_exists:
+            return
+
+        # Check if embeddings exist in database
+        embeddings_exist = self._check_embeddings_exist()
+
+        if embeddings_exist:
+            # Embeddings exist, create graph with them
+            self.create_decision_graph_projection(include_embeddings=True)
+        else:
+            # No embeddings - need to generate them first
+            # 1. Create graph without embeddings
+            self.create_decision_graph_projection(include_embeddings=False)
+            # 2. Generate FastRP embeddings (mutates in-memory graph)
+            self.generate_fastrp_embeddings()
+            # 3. Write embeddings to database
+            self.write_fastrp_embeddings()
+            # 4. Recreate graph with embeddings loaded
+            self.create_decision_graph_projection(include_embeddings=True)
 
     def _ensure_entity_graph_exists(self) -> None:
         """Ensure the entity-graph projection exists, creating it if necessary."""
@@ -305,6 +406,10 @@ class GDSClient:
             record = result.single()
             if not record or not record["exists"]:
                 self.create_entity_graph_projection()
+
+    # ============================================
+    # FRAUD PATTERN DETECTION
+    # ============================================
 
     def detect_fraud_patterns(
         self,
@@ -385,6 +490,10 @@ class GDSClient:
         graph_name: str = "decision-graph",
     ) -> list[dict]:
         """Detect communities of related decisions using Louvain."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -411,6 +520,10 @@ class GDSClient:
         graph_name: str = "decision-graph",
     ) -> dict:
         """Write community IDs to decision nodes."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -435,6 +548,10 @@ class GDSClient:
         graph_name: str = "decision-graph",
     ) -> list[dict]:
         """Calculate PageRank influence scores for decisions."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -463,6 +580,9 @@ class GDSClient:
         graph_name: str = "decision-graph",
     ) -> dict:
         """Write PageRank scores to decision nodes."""
+        # Ensure the graph projection exists
+        if graph_name == "decision-graph":
+            self._ensure_decision_graph_exists()
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """

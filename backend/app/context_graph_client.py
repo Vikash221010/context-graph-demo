@@ -58,6 +58,137 @@ class ContextGraphClient:
     def close(self):
         self.driver.close()
 
+    def ensure_indexes(self) -> dict:
+        """Ensure all required indexes exist, creating them if necessary."""
+        results = {"created": [], "existing": [], "errors": []}
+
+        # Define required indexes
+        indexes = [
+            # Constraints (unique IDs)
+            (
+                "constraint",
+                "person_id_unique",
+                "CREATE CONSTRAINT person_id_unique IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "account_id_unique",
+                "CREATE CONSTRAINT account_id_unique IF NOT EXISTS FOR (a:Account) REQUIRE a.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "transaction_id_unique",
+                "CREATE CONSTRAINT transaction_id_unique IF NOT EXISTS FOR (t:Transaction) REQUIRE t.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "decision_id_unique",
+                "CREATE CONSTRAINT decision_id_unique IF NOT EXISTS FOR (d:Decision) REQUIRE d.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "policy_id_unique",
+                "CREATE CONSTRAINT policy_id_unique IF NOT EXISTS FOR (p:Policy) REQUIRE p.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "employee_id_unique",
+                "CREATE CONSTRAINT employee_id_unique IF NOT EXISTS FOR (e:Employee) REQUIRE e.id IS UNIQUE",
+            ),
+            (
+                "constraint",
+                "organization_id_unique",
+                "CREATE CONSTRAINT organization_id_unique IF NOT EXISTS FOR (o:Organization) REQUIRE o.id IS UNIQUE",
+            ),
+            # Text indexes for search
+            (
+                "index",
+                "person_name_idx",
+                "CREATE INDEX person_name_idx IF NOT EXISTS FOR (p:Person) ON (p.normalized_name)",
+            ),
+            (
+                "index",
+                "account_number_idx",
+                "CREATE INDEX account_number_idx IF NOT EXISTS FOR (a:Account) ON (a.account_number)",
+            ),
+            (
+                "index",
+                "decision_type_category_idx",
+                "CREATE INDEX decision_type_category_idx IF NOT EXISTS FOR (d:Decision) ON (d.decision_type, d.category)",
+            ),
+            (
+                "index",
+                "decision_timestamp_idx",
+                "CREATE INDEX decision_timestamp_idx IF NOT EXISTS FOR (d:Decision) ON (d.decision_timestamp)",
+            ),
+            (
+                "index",
+                "policy_category_idx",
+                "CREATE INDEX policy_category_idx IF NOT EXISTS FOR (p:Policy) ON (p.category)",
+            ),
+            # Vector indexes for semantic search (1536 dims for OpenAI embeddings)
+            (
+                "vector",
+                "decision_reasoning_idx",
+                """
+                CREATE VECTOR INDEX decision_reasoning_idx IF NOT EXISTS
+                FOR (d:Decision) ON (d.reasoning_embedding)
+                OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+            """,
+            ),
+            (
+                "vector",
+                "policy_description_idx",
+                """
+                CREATE VECTOR INDEX policy_description_idx IF NOT EXISTS
+                FOR (p:Policy) ON (p.description_embedding)
+                OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+            """,
+            ),
+            # Vector indexes for FastRP structural embeddings (128 dims)
+            (
+                "vector",
+                "decision_fastrp_idx",
+                """
+                CREATE VECTOR INDEX decision_fastrp_idx IF NOT EXISTS
+                FOR (d:Decision) ON (d.fastrp_embedding)
+                OPTIONS {indexConfig: {`vector.dimensions`: 128, `vector.similarity_function`: 'cosine'}}
+            """,
+            ),
+            (
+                "vector",
+                "person_fastrp_idx",
+                """
+                CREATE VECTOR INDEX person_fastrp_idx IF NOT EXISTS
+                FOR (p:Person) ON (p.fastrp_embedding)
+                OPTIONS {indexConfig: {`vector.dimensions`: 128, `vector.similarity_function`: 'cosine'}}
+            """,
+            ),
+            (
+                "vector",
+                "account_fastrp_idx",
+                """
+                CREATE VECTOR INDEX account_fastrp_idx IF NOT EXISTS
+                FOR (a:Account) ON (a.fastrp_embedding)
+                OPTIONS {indexConfig: {`vector.dimensions`: 128, `vector.similarity_function`: 'cosine'}}
+            """,
+            ),
+        ]
+
+        with self.driver.session(database=self.database) as session:
+            for index_type, name, cypher in indexes:
+                try:
+                    session.run(cypher.strip())
+                    results["created"].append(f"{index_type}:{name}")
+                except Exception as e:
+                    error_msg = str(e)
+                    if "already exists" in error_msg.lower() or "equivalent" in error_msg.lower():
+                        results["existing"].append(f"{index_type}:{name}")
+                    else:
+                        results["errors"].append(f"{index_type}:{name} - {error_msg}")
+
+        return results
+
     def verify_connectivity(self) -> bool:
         """Verify connection to Neo4j."""
         try:
@@ -132,12 +263,13 @@ class ContextGraphClient:
                 WHERE true {type_filter}
                 OPTIONAL MATCH (d)-[:MADE_BY]->(maker)
                 OPTIONAL MATCH (d)-[:APPLIED_POLICY]->(policy:Policy)
+                WITH d, maker, collect(DISTINCT policy.name) AS policies_applied
                 RETURN d {{
                     .*,
                     made_by: maker.name,
-                    policies_applied: collect(DISTINCT policy.name)
+                    policies_applied: policies_applied
                 }} AS decision
-                ORDER BY d.decision_timestamp DESC
+                ORDER BY decision.decision_timestamp DESC
                 LIMIT $limit
                 """,
                 {
@@ -308,7 +440,7 @@ class ContextGraphClient:
                     .*,
                     target_types: target_types
                 }} AS decision
-                ORDER BY d.decision_timestamp DESC
+                ORDER BY decision.decision_timestamp DESC
                 LIMIT $limit
                 """,
                 params,

@@ -41,14 +41,24 @@ from .vector_client import vector_client
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
-    print("Starting Context Graph API...")
+    logger.info("Starting Context Graph API...")
     if context_graph_client.verify_connectivity():
-        print("Connected to Neo4j successfully!")
+        logger.info("Connected to Neo4j successfully!")
+
+        # Ensure all required indexes exist
+        logger.info("Checking database indexes...")
+        index_results = context_graph_client.ensure_indexes()
+        if index_results["created"]:
+            logger.info(f"Created indexes: {index_results['created']}")
+        if index_results["existing"]:
+            logger.info(f"Existing indexes: {len(index_results['existing'])} already present")
+        if index_results["errors"]:
+            logger.warning(f"Index errors: {index_results['errors']}")
     else:
-        print("Warning: Could not connect to Neo4j")
+        logger.warning("Could not connect to Neo4j")
     yield
     # Shutdown
-    print("Shutting down Context Graph API...")
+    logger.info("Shutting down Context Graph API...")
     context_graph_client.close()
     gds_client.close()
     vector_client.close()
