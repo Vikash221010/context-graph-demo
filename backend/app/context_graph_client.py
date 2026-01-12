@@ -466,27 +466,27 @@ class ContextGraphClient:
 
             if direction in ("both", "causes"):
                 result = session.run(
-                    """
-                    MATCH (d:Decision {id: $decision_id})
-                    MATCH path = (cause:Decision)-[:CAUSED|INFLUENCED*1..$depth]->(d)
+                    f"""
+                    MATCH (d:Decision {{id: $decision_id}})
+                    MATCH path = (cause:Decision)-[:CAUSED|INFLUENCED*1..{depth}]->(d)
                     WITH cause, length(path) AS distance
-                    RETURN cause {.*, distance: distance} AS decision
+                    RETURN cause {{.*, distance: distance}} AS decision
                     ORDER BY distance
                     """,
-                    {"decision_id": decision_id, "depth": depth},
+                    {"decision_id": decision_id},
                 )
                 causes = [record["decision"] for record in result]
 
             if direction in ("both", "effects"):
                 result = session.run(
-                    """
-                    MATCH (d:Decision {id: $decision_id})
-                    MATCH path = (d)-[:CAUSED|INFLUENCED*1..$depth]->(effect:Decision)
+                    f"""
+                    MATCH (d:Decision {{id: $decision_id}})
+                    MATCH path = (d)-[:CAUSED|INFLUENCED*1..{depth}]->(effect:Decision)
                     WITH effect, length(path) AS distance
-                    RETURN effect {.*, distance: distance} AS decision
+                    RETURN effect {{.*, distance: distance}} AS decision
                     ORDER BY distance
                     """,
-                    {"decision_id": decision_id, "depth": depth},
+                    {"decision_id": decision_id},
                 )
                 effects = [record["decision"] for record in result]
 

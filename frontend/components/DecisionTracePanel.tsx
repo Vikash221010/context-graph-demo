@@ -16,7 +16,6 @@ import {
 import {
   getSimilarDecisions,
   getCausalChain,
-  listDecisions,
   type Decision,
   type SimilarDecision,
   type CausalChain,
@@ -62,29 +61,7 @@ export function DecisionTracePanel({
     [],
   );
   const [causalChain, setCausalChain] = useState<CausalChain | null>(null);
-  const [recentDecisions, setRecentDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(false);
-  const [loadingRecent, setLoadingRecent] = useState(true);
-
-  // Load recent decisions when no decision is selected and no graph decisions
-  useEffect(() => {
-    if (!decision && graphDecisions.length === 0) {
-      const fetchRecentDecisions = async () => {
-        setLoadingRecent(true);
-        try {
-          const decisions = await listDecisions(undefined, undefined, 15);
-          setRecentDecisions(decisions);
-        } catch (error) {
-          console.error("Failed to fetch recent decisions:", error);
-        } finally {
-          setLoadingRecent(false);
-        }
-      };
-      fetchRecentDecisions();
-    } else {
-      setLoadingRecent(false);
-    }
-  }, [decision, graphDecisions.length]);
 
   useEffect(() => {
     if (!decision) {
@@ -112,15 +89,13 @@ export function DecisionTracePanel({
     fetchData();
   }, [decision]);
 
-  // Determine which decisions to show in the list
-  const decisionsToShow =
-    graphDecisions.length > 0 ? graphDecisions : recentDecisions;
-  const listTitle =
-    graphDecisions.length > 0 ? "Decisions in Graph" : "Recent Decisions";
+  // Only show decisions from the graph
+  const decisionsToShow = graphDecisions;
+  const listTitle = "Decisions in Graph";
   const listDescription =
     graphDecisions.length > 0
       ? "Decisions visible in the Context Graph. Click to view details, or double-click nodes in the graph to expand."
-      : "Click a decision to view its full trace, causal chain, and similar decisions.";
+      : "Use the AI assistant to search for customers or decisions. Decision nodes will appear here when added to the graph.";
 
   // Show decisions list when no decision is selected
   if (!decision) {
@@ -139,11 +114,7 @@ export function DecisionTracePanel({
             </Badge>
           )}
 
-          {loadingRecent ? (
-            <Flex justify="center" py={8}>
-              <Spinner size="md" />
-            </Flex>
-          ) : decisionsToShow.length > 0 ? (
+          {decisionsToShow.length > 0 ? (
             <VStack gap={2} align="stretch">
               {decisionsToShow.map((d) => (
                 <RecentDecisionCard
@@ -155,7 +126,7 @@ export function DecisionTracePanel({
             </VStack>
           ) : (
             <Text color="gray.500" textAlign="center" py={4}>
-              No decisions found.
+              No decisions in graph yet.
             </Text>
           )}
         </VStack>

@@ -118,11 +118,12 @@ export function ContextGraphView({
     }
   }, [graphData]);
 
-  // Notify parent when decision nodes change
+  // Notify parent when decision nodes change (excluding schema nodes)
   useEffect(() => {
     if (internalGraphData && onDecisionNodesChange) {
-      const decisionNodes = internalGraphData.nodes.filter((node) =>
-        node.labels.includes("Decision"),
+      const decisionNodes = internalGraphData.nodes.filter(
+        (node) =>
+          node.labels.includes("Decision") && !node.properties.isSchemaNode,
       );
       onDecisionNodesChange(decisionNodes);
     }
@@ -592,12 +593,24 @@ function NvlGraph({
 }) {
   const [NvlComponent, setNvlComponent] =
     useState<React.ComponentType<any> | null>(null);
+  const [isReady, setIsReady] = useState(false);
+  const nvlRef = useRef<any>(null);
 
   useEffect(() => {
     import("@neo4j-nvl/react").then((mod) => {
       setNvlComponent(() => mod.InteractiveNvlWrapper);
     });
   }, []);
+
+  // Mark as ready after a short delay to allow NVL instance to fully initialize
+  useEffect(() => {
+    if (NvlComponent && nodes.length > 0) {
+      const timer = setTimeout(() => {
+        setIsReady(true);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [NvlComponent, nodes.length]);
 
   if (!NvlComponent) {
     return (
@@ -609,6 +622,7 @@ function NvlGraph({
 
   return (
     <NvlComponent
+      ref={nvlRef}
       nodes={nodes}
       rels={relationships}
       nvlOptions={{
@@ -624,8 +638,8 @@ function NvlGraph({
         onNodeDoubleClick: (node: NvlNode) => onNodeDoubleClick(node),
         onRelationshipClick: (rel: NvlRelationship) => onRelationshipClick(rel),
         onCanvasClick: () => onCanvasClick(),
-        onZoom: true,
-        onPan: true,
+        onZoom: isReady,
+        onPan: isReady,
       }}
       style={{ width: "100%", height: "100%" }}
     />

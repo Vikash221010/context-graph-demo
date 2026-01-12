@@ -364,6 +364,9 @@ class GDSClient:
         3. Write embeddings back to database
         4. Recreate the graph projection with embeddings
         """
+        # Check if embeddings exist in database
+        embeddings_exist = self._check_embeddings_exist()
+
         with self.driver.session(database=self.database) as session:
             result = session.run(
                 """
@@ -374,14 +377,12 @@ class GDSClient:
             record = result.single()
             graph_exists = record and record["exists"]
 
-        if graph_exists:
+        if graph_exists and embeddings_exist:
+            # Graph exists and embeddings are in database, we're good
             return
 
-        # Check if embeddings exist in database
-        embeddings_exist = self._check_embeddings_exist()
-
         if embeddings_exist:
-            # Embeddings exist, create graph with them
+            # Embeddings exist in DB but graph needs to be (re)created with them
             self.create_decision_graph_projection(include_embeddings=True)
         else:
             # No embeddings - need to generate them first
