@@ -533,8 +533,8 @@ export function ContextGraphView({
         opacity={0.8}
       >
         <Text fontSize="xs" color="gray.500">
-          Scroll to zoom | Drag to pan | Click to inspect | Double-click to
-          expand
+          Scroll to zoom | Drag canvas to pan | Drag nodes to move | Click to
+          inspect | Double-click to expand
         </Text>
       </Box>
 
@@ -640,6 +640,7 @@ function NvlGraph({
         onCanvasClick: () => onCanvasClick(),
         onZoom: isReady,
         onPan: isReady,
+        onDrag: isReady,
       }}
       style={{ width: "100%", height: "100%" }}
     />
