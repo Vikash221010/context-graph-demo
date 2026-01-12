@@ -143,10 +143,11 @@ export function DecisionTracePanel({
         {/* Back button */}
         <Button
           size="sm"
-          variant="ghost"
+          variant="outline"
+          colorPalette="gray"
           onClick={() => onDecisionSelect(null as unknown as Decision)}
         >
-          Back to list
+          ← Back to list
         </Button>
 
         {/* Decision Header */}
