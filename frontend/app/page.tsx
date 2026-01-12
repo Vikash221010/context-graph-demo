@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import {
   Box,
   Flex,
@@ -9,11 +9,12 @@ import {
   Container,
   Grid,
   GridItem,
+  Button,
 } from "@chakra-ui/react";
 import dynamic from "next/dynamic";
 import { ChatInterface } from "@/components/ChatInterface";
 import { DecisionTracePanel } from "@/components/DecisionTracePanel";
-import { getGraphSchema, schemaToGraphData } from "@/lib/api";
+import { SchemaDrawer } from "@/components/SchemaDrawer";
 import type { Decision, GraphData, GraphNode, ChatMessage } from "@/lib/api";
 
 // Helper to convert a GraphNode to a Decision object
@@ -49,20 +50,7 @@ export default function Home() {
   const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>(
     [],
   );
-
-  // Load graph schema on mount
-  useEffect(() => {
-    async function loadSchema() {
-      try {
-        const schema = await getGraphSchema();
-        const data = schemaToGraphData(schema);
-        setGraphData(data);
-      } catch (error) {
-        console.error("Failed to load graph schema:", error);
-      }
-    }
-    loadSchema();
-  }, []);
+  const [schemaDrawerOpen, setSchemaDrawerOpen] = useState(true);
 
   const handleDecisionSelect = useCallback((decision: Decision) => {
     setSelectedDecision(decision);
@@ -93,6 +81,12 @@ export default function Home() {
 
   return (
     <Box minH="100vh" bg="bg.canvas">
+      {/* Schema Drawer */}
+      <SchemaDrawer
+        open={schemaDrawerOpen}
+        onOpenChange={setSchemaDrawerOpen}
+      />
+
       {/* Header */}
       <Box
         as="header"
@@ -112,6 +106,13 @@ export default function Home() {
                 AI-powered decision tracing for financial institutions
               </Text>
             </Box>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSchemaDrawerOpen(true)}
+            >
+              About & Schema
+            </Button>
           </Flex>
         </Container>
       </Box>
