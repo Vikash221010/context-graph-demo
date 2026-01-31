@@ -88,6 +88,17 @@ async def lifespan(app: FastAPI):
                 logger.info("Community detection complete")
         except Exception as e:
             logger.warning(f"Could not run community detection: {e}")
+
+        # Run PageRank influence scoring for flagged transactions
+        logger.info("Running flagged transaction influence scoring...")
+        try:
+            pagerank_result = gds_client.calculate_flagged_transaction_influence()
+            logger.info(
+                f"Flagged transaction influence scoring complete: {pagerank_result.properties_written} nodes scored"
+            )
+        except Exception as e:
+            logger.warning(f"Could not run PageRank: {e}")
+
     else:
         logger.warning("Could not connect to Neo4j")
     yield

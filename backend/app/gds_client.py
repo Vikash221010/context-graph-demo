@@ -6,6 +6,7 @@ Implements FastRP, KNN, Node Similarity, Louvain, and PageRank.
 from typing import Optional
 
 from neo4j import GraphDatabase
+from graphdatascience import GraphDataScience
 
 from .config import config
 
@@ -20,9 +21,15 @@ class GDSClient:
         )
         self.database = config.neo4j.database
         self.fastrp_dimensions = config.fastrp_dimensions
+        self.gds = GraphDataScience(
+            config.neo4j.uri,
+            auth=(config.neo4j.username, config.neo4j.password),
+            database=config.neo4j.database,
+        )
 
     def close(self):
         self.driver.close()
+        self.gds.close()
 
     # ============================================
     # GRAPH PROJECTION MANAGEMENT
@@ -116,6 +123,28 @@ class GDSClient:
             )
             record = result.single()
             return dict(record) if record else {}
+        
+    def create_transaction_graph_projection(self) -> dict:
+        """Create the transaction graph projection for influence scoring."""
+        self.gds.graph.drop('transaction-graph', False)
+        g_transactions, _ = self.gds.graph.cypher.project(
+            """//cypher
+            MATCH (a:Account)
+            OPTIONAL MATCH (a)<-[t:FROM_ACCOUNT|TO_ACCOUNT]-(tr:Transaction)
+            RETURN gds.graph.project('transaction-graph',
+                tr, a,
+                {
+                    sourceNodeLabels: ['Transaction'],
+                    targetNodeLabels: ['Account'],
+                    relationshipType: 'INFLUENCES_ACCOUNT'
+                },
+                {
+                    undirectedRelationshipTypes: ['INFLUENCES_ACCOUNT']
+                }
+                )
+            """)
+        return g_transactions
+
 
     def list_graph_projections(self) -> list[dict]:
         """List all graph projections."""
@@ -481,6 +510,43 @@ class GDSClient:
                     {"graph_name": graph_name, "threshold": similarity_threshold},
                 )
             return [dict(record) for record in result]
+        
+    # ============================================
+    # PAGE RANK NODE INFLUENCE SCORING
+    # ============================================
+    def calculate_flagged_transaction_influence(
+        self
+    ) -> None:
+        """Calculate influence scores for accounts showing how much they are influenced by flagged transactions."""
+        # Ensure the graph projection exists
+        g_transactions = self.create_transaction_graph_projection()
+
+        flagged_node_records, _, _ = self.driver.execute_query(
+            """//cypher
+            MATCH (tr:Transaction)
+            WHERE tr.status = 'flagged'
+            RETURN collect(id(tr)) AS flagged_node_ids
+            """)
+        
+        flagged_node_ids = flagged_node_records[0]['flagged_node_ids']
+
+        self.gds.v2.page_rank.mutate(
+            g_transactions,
+            source_nodes = flagged_node_ids,
+            mutate_property = 'flagged_transaction_influence',
+            scaler = 'MinMax'
+        )
+
+        write_result = self.gds.v2.graph.node_properties.write(
+            g_transactions,
+            ['flagged_transaction_influence'],
+            node_labels = ['Account']
+        )
+
+        g_transactions.drop()
+
+        return write_result
+        
 
     # ============================================
     # LOUVAIN COMMUNITY DETECTION
