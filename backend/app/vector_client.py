@@ -190,56 +190,40 @@ class VectorClient:
                 """
                 // Get the source decision
                 MATCH (source:Decision {id: $decision_id})
+                // Ensure valid embeddings exist
+                WHERE any(val in source.fastrp_embedding WHERE val <> 0.0)
+                AND any(val in source.reasoning_embedding WHERE val <> 0.0)
+                // Use union to find both most semantically and structurally similar
+                CALL (source) {
 
-                // Find semantically similar
-                CALL db.index.vector.queryNodes(
-                    'decision_reasoning_idx',
-                    $limit * 2,
-                    source.reasoning_embedding
-                ) YIELD node AS semantic_match, score AS semantic_score
-                WHERE semantic_match <> source
+                    // Find semantically similar
+                    CALL db.index.vector.queryNodes(
+                        'decision_reasoning_idx',
+                        $limit * 2 + 1,
+                        source.reasoning_embedding
+                    ) YIELD node, score AS semantic_score
+                    WHERE node <> source
+                    AND any(val in node.fastrp_embedding WHERE val <> 0.0)
+                    RETURN node, semantic_score, vector.similarity.cosine(source.fastrp_embedding, node.fastrp_embedding) AS structural_score
 
-                // Find structurally similar
-                WITH source, semantic_match, semantic_score
-                CALL db.index.vector.queryNodes(
-                    'decision_fastrp_idx',
-                    $limit * 2,
-                    source.fastrp_embedding
-                ) YIELD node AS structural_match, score AS structural_score
-                WHERE structural_match <> source
+                    UNION
 
-                // Find overlap and combine
-                WITH source,
-                     CASE WHEN semantic_match = structural_match
-                          THEN semantic_match
-                          ELSE null END AS both_match,
-                     semantic_match,
-                     semantic_score,
-                     structural_match,
-                     structural_score
+                    // Find structurally similar
+                    CALL db.index.vector.queryNodes(
+                        'decision_fastrp_idx',
+                        $limit * 2 + 1,
+                        source.fastrp_embedding
+                    ) YIELD node, score AS structural_score
+                    WHERE node <> source
+                    AND any(val in node.reasoning_embedding WHERE val <> 0.0)
+                    RETURN node, vector.similarity.cosine(source.reasoning_embedding, node.reasoning_embedding) AS semantic_score, structural_score
+                }
 
-                // Collect all matches with their scores
-                WITH collect({
-                    decision: semantic_match,
-                    semantic: semantic_score,
-                    structural: 0.0
-                }) + collect({
-                    decision: structural_match,
-                    semantic: 0.0,
-                    structural: structural_score
-                }) AS all_matches
-
-                UNWIND all_matches AS match
-                WITH match.decision AS decision,
-                     sum(match.semantic) AS total_semantic,
-                     sum(match.structural) AS total_structural
-                WHERE decision IS NOT NULL
-
-                WITH decision,
-                     total_semantic AS semantic_score,
-                     total_structural AS structural_score,
-                     (total_semantic * $semantic_weight + total_structural * $structural_weight) AS combined_score
-
+                WITH node AS decision, semantic_score, structural_score,
+                     (semantic_score * $semantic_weight + structural_score * $structural_weight) AS combined_score
+                ORDER BY combined_score DESC
+                LIMIT $limit
+                
                 RETURN decision.id AS id,
                        decision.decision_type AS decision_type,
                        decision.category AS category,
@@ -248,8 +232,6 @@ class VectorClient:
                        combined_score,
                        semantic_score AS semantic_similarity,
                        structural_score AS structural_similarity
-                ORDER BY combined_score DESC
-                LIMIT $limit
                 """,
                 {
                     "decision_id": decision_id,
@@ -301,43 +283,6 @@ class VectorClient:
                 {"policy_id": policy_id, "embedding": embedding},
             )
             return result.single() is not None
-
-    def batch_update_decision_embeddings(
-        self,
-        limit: int = 100,
-    ) -> int:
-        """Generate embeddings for decisions that don't have them."""
-        with self.driver.session(database=self.database) as session:
-            # Get decisions without embeddings
-            result = session.run(
-                """
-                MATCH (d:Decision)
-                WHERE d.reasoning_embedding IS NULL AND d.reasoning IS NOT NULL
-                RETURN d.id AS id, d.reasoning AS reasoning
-                LIMIT $limit
-                """,
-                {"limit": limit},
-            )
-            decisions = [dict(record) for record in result]
-
-            if not decisions:
-                return 0
-
-            # Generate embeddings in batch
-            texts = [d["reasoning"] for d in decisions]
-            embeddings = self.generate_embeddings_batch(texts)
-
-            # Update each decision
-            for decision, embedding in zip(decisions, embeddings):
-                session.run(
-                    """
-                    MATCH (d:Decision {id: $decision_id})
-                    SET d.reasoning_embedding = $embedding
-                    """,
-                    {"decision_id": decision["id"], "embedding": embedding},
-                )
-
-            return len(decisions)
 
 
 # Singleton instance
