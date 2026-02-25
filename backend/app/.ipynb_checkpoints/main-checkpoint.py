@@ -78,15 +78,18 @@ app = FastAPI(
 )
 
 # CORS middleware for frontend
+import re
+
 app.add_middleware(
     CORSMiddleware,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
-        "https://context-graph-demo.vercel.app",
         "https://vikash.notebook.us-east-1.sagemaker.aws",
+        "https://context-graph-demo-rgmns3k9c-vikash221010s-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
